@@ -1,7 +1,7 @@
 import argparse
 import string
 import num2words
-
+import torch
 from dataset.librispeech import LibriSpeech
 from dataset.edacc import EdAcc
 from dataset.l2artic import L2Artic
@@ -21,7 +21,10 @@ def parse_args():
 
 def collate_fn(batch):
     audios, audio_lens, texts, fids, context_texts = list(zip(*batch))
-    audios = audios[0].unsqueeze(0)
+    audios = torch.cat(audios[0], dim=-1).unsqueeze(0)
+    # audios = audios[0]
+    audio_lens = torch.tensor(sum(audio_lens[0])).unsqueeze(0)
+    # audio_lens = audio_lens[0]
     texts = texts[0]
     context_texts = context_texts[0]
     return audios, audio_lens, texts, fids, context_texts

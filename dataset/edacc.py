@@ -27,54 +27,71 @@ class EdAcc(Dataset):
 
             for i in tqdm(range(len(pq))):
                 row = pq[i]
-                accent = row['accent'][0]
                 spk_id = row['speaker'][0]
+                accent = row['accent'][0]
                 fid = row['audio'][0]['path'].replace('.wav', '')
-                # audio, source_sr = self._read_bytes_to_arr(row['audio'][0]['bytes'])
-                # audio, sample_rate = self._resample(audio, source_sr)
-                # if len(audio) / sample_rate > 40:
-                #     continue # skip too long
                 audio = row['audio'][0]['bytes']
-                audio_len = self.wav_duration_from_bytes(audio)
-                if audio_len > 30:
-                    continue
+                audio_duration = self.wav_duration_from_bytes(audio)
+                if audio_duration > 40:
+                    continue # skip too long
                 text = self._filter(row['text'][0])
                 if len(text.split()) < 2:
                     continue # skip empty transcript
-                pqs.append((audio, audio_len, text, spk_id, accent))
-        # pqs = sorted(pqs, key=lambda x: x[1], reverse=True)
+                pqs.append((audio, audio_duration, text, spk_id, accent))
 
         self.dataset = []
         for i, item in enumerate(tqdm(pqs)):
-            audio, audio_len, text, spk_id, accent = item
-            if not context:
-                self.dataset.append((audio, text, f"{spk_id}_{i}", None, None))
-            else:
+            audio, audio_duration, text, spk_id, accent = item
+            audios = []
+            context_text_normalized = []
+            if context:
                 if context_type == "random":
-                    inds = np.arange(len(pqs))
+                    inds = list(range(len(pqs)))
                     inds.remove(i)
-                    context_id = random.choice(inds)
-                    context_audio, _, context_text, _, _ = pqs[context_id]
-                    context_text_normalized = (context_text + ".").capitalize()
-                elif context_type == "speaker":
-                    inds = [(ind, v[1]) for ind, v in enumerate(pqs) if v[3] == spk_id and ind != i]
-                    inds = sorted(inds, key=lambda x: x[1], reverse=True)
-                    # context_id = random.choice(range(0, min(len(inds), 5)))
-                    # context_id = inds[context_id][0]
-                    context_id = inds[0][0]
-                    context_audio, _, context_text, _, _ = pqs[context_id]
-                    context_text_normalized = (context_text + ".").capitalize()
-                elif context_type == "accent":
-                    inds = [(ind, v[1]) for ind, v in enumerate(pqs) if v[-1] == accent and ind != i]
-                    inds = sorted(inds, key=lambda x: x[1], reverse=True)
-                    context_id = inds[0][0]
-                    context_audio, _, context_text, _, _ = pqs[context_id]
-                    context_text_normalized = (context_text + ".").capitalize()
-                elif context_type == "same":
-                    context_audio = audio
-                    context_text_normalized = (text + ".").capitalize()
+                    total_duration = 0
+                    while total_duration < 20 and len(inds) > 0:
+                        context_id = random.choice(inds)
+                        context_audio, context_audio_duration, context_text, _, _ = pqs[context_id]
+                        if round(total_duration + context_audio_duration) <= 20:
+                            context_text_normalized.append(context_text + ".")
+                            audios.append(context_audio)
+                            total_duration += context_audio_duration
+                            inds.remove(context_id)
+                        else:
+                            if total_duration == 0: # still empty, continue sampling
+                                inds.remove(context_id)
+                                continue
+                            else:
+                                break
 
-                self.dataset.append((audio, text, f"{spk_id}_{i}", context_audio, context_text_normalized)) 
+                elif context_type == "speaker":
+                    inds = [ind for ind, v in enumerate(pqs) if v[3] == spk_id and ind != i]
+                    total_duration = 0
+                    while total_duration < 10 and len(inds) > 0:
+                        context_id = random.choice(inds)
+                        context_audio, context_audio_duration, context_text, _, _ = pqs[context_id]
+                        if round(total_duration + context_audio_duration) <= 10:
+                            context_text_normalized.append(context_text + ".")
+                            audios.append(context_audio)
+                            total_duration += context_audio_duration
+                            inds.remove(context_id)
+                        else:
+                            if total_duration == 0: # still empty, continue sampling
+                                inds.remove(context_id)
+                                continue
+                            else:
+                                break
+
+                elif context_type == "same":
+                    # context_audio = audio
+                    audios.append(audio)
+                    context_text_normalized.append(text + ".")
+                else:
+                    raise NotImplementedError
+            
+            audios.append(audio) # put target audio at the end
+            self.dataset.append((audios, text, f"{spk_id}_{i}", context_text_normalized))
+
         del pqs
     
     def wav_duration_from_bytes(self, b: bytes) -> float:
@@ -93,32 +110,48 @@ class EdAcc(Dataset):
 
     def _read_bytes_to_arr(self, bytes):
         wav, sr = sf.read(io.BytesIO(bytes), dtype='float32')
-        return torch.from_numpy(wav), sr
+        wav = torch.from_numpy(wav)
+        return wav, sr
     
     def _resample(self, wav, source_sr, target_sr=16000):
         resampler = torchaudio.transforms.Resample(source_sr, target_sr, dtype=wav.dtype)
         resampled_wav = resampler(wav)
         return resampled_wav, target_sr
-
+    
     def _filter(self, text):
         # replace tags
         text = text.replace('IGNORE_TIME_SEGMENT_IN_SCORING', '')
         text = re.sub(r"(<\w\S+>)", "", text) 
-        text = text.strip()
+        text = text.strip().capitalize()
+        tokens = text.split()
+        for i in range(len(tokens)):
+            if tokens[i] == "i":
+                tokens[i] = "I"
+            elif tokens[i] == "i'm":
+                tokens[i] = "I'm"
+        text = " ".join(tokens)
         return text
     
     def __getitem__(self, item):
-        audio, text, fid, context_audio, context_text = self.dataset[item]
-        audio, source_sr = self._read_bytes_to_arr(audio)
-        audio, sample_rate = self._resample(audio, source_sr)
-        if context_audio is not None:
-            context_audio, source_sr = self._read_bytes_to_arr(context_audio)
-            context_audio, sample_rate = self._resample(context_audio, source_sr)
-            audio = torch.cat((context_audio.squeeze(), audio.squeeze()))
+        audios, text, fid, context_text = self.dataset[item]
+        loaded_audios = []
+        # load context audios
+        if context_text:
+            assert len(audios) > 1
+            for i in range(len(audios) - 1):
+                context_audio, source_sr = self._read_bytes_to_arr(audios[i])
+                context_audio, sample_rate = self._resample(context_audio, source_sr)
+                assert sample_rate == 16000
+                loaded_audios.append(context_audio.squeeze())
+        # load target audio
+        target_audio, source_sr = self._read_bytes_to_arr(audios[-1])
+        target_audio, sample_rate = self._resample(target_audio, source_sr)
         assert sample_rate == 16000
-        audio_len = len(audio)
+        loaded_audios.append(target_audio.squeeze()) # put the target audio at the end
 
-        return audio, audio_len, text, fid, context_text
+        audio_len = [len(a) for a in loaded_audios]
+
+        return loaded_audios, audio_len, text, fid, context_text
 
     def __len__(self):
         return len(self.dataset)

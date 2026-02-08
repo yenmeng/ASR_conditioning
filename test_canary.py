@@ -77,6 +77,7 @@ if __name__ == '__main__':
         special_token_ids = tokenizer.tokens_to_ids(special_tokens, ['spl_tokens' for _ in range(len(special_tokens))])
 
         if args.context:
+            context_texts = " ".join(context_texts).strip(".") + ","
             input_token_ids = tokenizer.text_to_ids(context_texts, 'en')
             print(input_token_ids)
             print(len(input_token_ids))
